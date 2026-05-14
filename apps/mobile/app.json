@@ -1,0 +1,15 @@
+{
+  "expo": {
+    "name": "Pintintin",
+    "slug": "pintintin",
+    "scheme": "pintintin",
+    "version": "0.0.1",
+    "orientation": "landscape",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": { "supportsTablet": false, "bundleIdentifier": "com.pintintin.app" },
+    "android": { "package": "com.pintintin.app" },
+    "plugins": ["expo-router"],
+    "experiments": { "typedRoutes": true }
+  }
+}
