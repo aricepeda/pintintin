@@ -1,6 +1,5 @@
 import React, { useEffect } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
-import { Image } from 'expo-image';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -12,26 +11,27 @@ import Animated, {
 } from 'react-native-reanimated';
 import { TurnTimer } from './TurnTimer';
 
+export type PlayerSeatLayout = 'top' | 'bottom' | 'left' | 'right';
+
 export interface PlayerSeatProps {
   name: string;
-  rating: number;
   money: number;
   avatarUri?: string;
   isActive?: boolean;
   isCurrentUser?: boolean;
   turnDeadline?: number | null;
+  handCount?: number | null;
+  layout?: PlayerSeatLayout;
 }
-
-const AVATAR_SIZE = 64;
 
 export function PlayerSeat({
   name,
-  rating,
   money,
-  avatarUri,
   isActive = false,
   isCurrentUser = false,
   turnDeadline = null,
+  handCount = null,
+  layout = 'bottom',
 }: PlayerSeatProps) {
   const pulse = useSharedValue(0);
 
@@ -53,22 +53,37 @@ export function PlayerSeat({
   }, [isActive, pulse]);
 
   const glowStyle = useAnimatedStyle(() => ({
-    opacity: 0.4 + pulse.value * 0.55,
-    transform: [{ scale: 1 + pulse.value * 0.08 }],
+    opacity: 0.35 + pulse.value * 0.5,
   }));
 
+  const showTiles = !isCurrentUser && typeof handCount === 'number' && handCount > 0;
+  const tilesVertical = layout === 'left' || layout === 'right';
+  const containerStyle =
+    layout === 'left'
+      ? styles.containerRow
+      : layout === 'right'
+        ? styles.containerRowReverse
+        : layout === 'top'
+          ? styles.containerColReverse
+          : styles.containerCol;
+
+  const tilesNode = showTiles ? (
+    <View style={[styles.tiles, tilesVertical && styles.tilesVertical]} pointerEvents="none">
+      {Array.from({ length: handCount! }).map((_, i) => (
+        <View key={i} style={[styles.miniTile, tilesVertical && styles.miniTileVertical]} />
+      ))}
+    </View>
+  ) : null;
+
   return (
-    <View style={styles.container}>
-      <View style={styles.avatarWrap}>
+    <View style={containerStyle}>
+      <View style={styles.cardWrap}>
         {isActive && <Animated.View style={[styles.glow, glowStyle]} />}
-        <View style={[styles.avatarRing, isCurrentUser && styles.avatarRingCurrent]}>
-          {avatarUri ? (
-            <Image source={{ uri: avatarUri }} style={styles.avatar} contentFit="cover" transition={150} />
-          ) : (
-            <View style={[styles.avatar, styles.avatarFallback]}>
-              <Text style={styles.avatarInitial}>{name.charAt(0).toUpperCase()}</Text>
-            </View>
-          )}
+        <View style={[styles.card, isCurrentUser && styles.cardCurrent]}>
+          <Text style={styles.name} numberOfLines={1}>
+            {name}
+          </Text>
+          <Text style={styles.money}>${money.toLocaleString()}</Text>
         </View>
         {isActive && turnDeadline != null && (
           <View style={styles.timerSlot}>
@@ -76,38 +91,63 @@ export function PlayerSeat({
           </View>
         )}
       </View>
-
-      <View style={styles.card}>
-        <View style={styles.row}>
-          <Text style={styles.name} numberOfLines={1}>
-            {name}
-          </Text>
-          <Text style={styles.star}>★</Text>
-          <Text style={styles.rating}>{rating}</Text>
-        </View>
-        <Text style={styles.money}>${money.toLocaleString()}</Text>
-      </View>
+      {tilesNode}
     </View>
   );
 }
 
-const GLOW_SIZE = AVATAR_SIZE + 28;
-
 const styles = StyleSheet.create({
-  container: {
+  containerCol: {
     alignItems: 'center',
+    flexDirection: 'column',
+    gap: 4,
   },
-  avatarWrap: {
-    width: AVATAR_SIZE,
-    height: AVATAR_SIZE,
+  containerColReverse: {
+    alignItems: 'center',
+    flexDirection: 'column-reverse',
+    gap: 4,
+  },
+  containerRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 6,
+  },
+  containerRowReverse: {
+    alignItems: 'center',
+    flexDirection: 'row-reverse',
+    gap: 6,
+  },
+  cardWrap: {
     alignItems: 'center',
     justifyContent: 'center',
   },
+  tiles: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 2,
+    justifyContent: 'center',
+    maxWidth: 96,
+  },
+  tilesVertical: {
+    flexDirection: 'column',
+    maxWidth: 14,
+    maxHeight: 120,
+  },
+  miniTile: {
+    width: 9,
+    height: 16,
+    backgroundColor: '#7a3b3b',
+    borderRadius: 2,
+    borderWidth: 0.5,
+    borderColor: '#3a1010',
+  },
+  miniTileVertical: {
+    width: 16,
+    height: 9,
+  },
   glow: {
-    position: 'absolute',
-    width: GLOW_SIZE,
-    height: GLOW_SIZE,
-    borderRadius: GLOW_SIZE / 2,
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 10,
     backgroundColor: '#3b82f6',
     shadowColor: '#3b82f6',
     shadowOpacity: 1,
@@ -115,65 +155,27 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 0 },
     elevation: 12,
   },
-  avatarRing: {
-    width: AVATAR_SIZE,
-    height: AVATAR_SIZE,
-    borderRadius: AVATAR_SIZE / 2,
-    borderWidth: 2,
-    borderColor: '#1a1a1a',
-    backgroundColor: '#0a0a0a',
-    overflow: 'hidden',
-  },
-  avatarRingCurrent: {
-    borderColor: '#c9a961',
-  },
-  avatar: {
-    width: '100%',
-    height: '100%',
-  },
-  avatarFallback: {
-    backgroundColor: '#2a2a2a',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
   timerSlot: {
     position: 'absolute',
-    bottom: -6,
-    right: -6,
-  },
-  avatarInitial: {
-    color: '#e8b85c',
-    fontSize: 24,
-    fontWeight: '700',
+    bottom: -10,
+    right: -10,
   },
   card: {
-    marginTop: 6,
     backgroundColor: '#0a0a0a',
     borderColor: '#1a1a1a',
     borderWidth: 1,
     borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    minWidth: 110,
+    paddingHorizontal: 7,
+    paddingVertical: 5,
+    minWidth: 84,
+    maxWidth: 96,
     alignItems: 'center',
   },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
+  cardCurrent: {
+    borderColor: '#c9a961',
   },
   name: {
     color: '#f5f5f5',
-    fontSize: 13,
-    fontWeight: '600',
-    maxWidth: 70,
-  },
-  star: {
-    color: '#c9a961',
-    fontSize: 12,
-  },
-  rating: {
-    color: '#c9a961',
     fontSize: 12,
     fontWeight: '600',
   },
