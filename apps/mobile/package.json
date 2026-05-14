@@ -16,7 +16,6 @@
     "@pintintin/game-core": "workspace:*",
     "@pintintin/protocol": "workspace:*",
     "@react-native-async-storage/async-storage": "1.23.1",
-    "@shopify/react-native-skia": "^2.6.2",
     "@supabase/supabase-js": "^2.45.0",
     "expo": "~54.0.34",
     "expo-constants": "~16.0.0",

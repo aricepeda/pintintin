@@ -120,10 +120,13 @@ export function GameScreen() {
 const styles = StyleSheet.create({
   seatsLayer: { ...StyleSheet.absoluteFillObject },
   seat: { position: 'absolute' },
-  north: { top: 12, left: 0, right: 0, alignItems: 'center' },
-  southInfo: { bottom: 130, right: 24, alignItems: 'flex-end' },
-  east: { right: 16, top: 0, bottom: 0, justifyContent: 'center' },
-  west: { left: 16, top: 0, bottom: 0, justifyContent: 'center' },
+  // Avatares con su centro sobre el borde del óvalo (mesa = 88% × 72% pantalla).
+  // marginTop/Bottom/Left/Right -40 centra el avatar (~80px) sobre el borde.
+  north:     { top: '14%',    left: 0, right: 0, alignItems: 'center',      marginTop: -40 },
+  southInfo: { bottom: '14%', left: 0, right: 0, alignItems: 'center',      marginBottom: -40 },
+  east:      { right: '6%',   top: 0, bottom: 0, justifyContent: 'center',  marginRight: -40 },
+  west:      { left: '6%',    top: 0, bottom: 0, justifyContent: 'center',  marginLeft: -40 },
+  // Mano debajo del seat sur, alineada al fondo.
   handLayer: { position: 'absolute', left: 0, right: 0, bottom: 12, alignItems: 'center' },
   menuLayer: { position: 'absolute', top: 16, left: 16 },
 });
