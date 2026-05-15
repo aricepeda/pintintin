@@ -16,6 +16,12 @@ export interface Announcement {
   seat?: Seat;
 }
 
+export interface OpenerDrawData {
+  draws: Record<number, { a: number; b: number }>;
+  winnerSeat: Seat;
+  durationMs: number;
+}
+
 interface GameState {
   roomId: string | null;
   yourSeat: Seat | null;
@@ -29,6 +35,8 @@ interface GameState {
   setMatchCountdownDeadline: (t: number | null) => void;
   pending: boolean;
   setPending: (p: boolean) => void;
+  openerDraw: OpenerDrawData | null;
+  setOpenerDraw: (d: OpenerDrawData | null) => void;
   setJoined: (p: { roomId: string; yourSeat: Seat; yourHand: Tile[]; publicState: PublicState }) => void;
   setWaiting: (p: RoomWaitingPayload | null) => void;
   setDealt: (p: { yourHand: Tile[]; publicState?: PublicState }) => void;
@@ -53,6 +61,8 @@ export const useGameStore = create<GameState>((set) => ({
   setMatchCountdownDeadline: (t) => set({ matchCountdownDeadline: t }),
   pending: false,
   setPending: (p) => set({ pending: p }),
+  openerDraw: null,
+  setOpenerDraw: (d) => set({ openerDraw: d }),
   setJoined: (p) =>
     set({ roomId: p.roomId, yourSeat: p.yourSeat, yourHand: p.yourHand, publicState: p.publicState, waiting: null }),
   setWaiting: (p) =>
@@ -67,6 +77,6 @@ export const useGameStore = create<GameState>((set) => ({
   reset: () => set({
     roomId: null, yourSeat: null, yourHand: [], publicState: null,
     turnDeadline: null, announcement: null, roundEndData: null, waiting: null,
-    matchCountdownDeadline: null, pending: false,
+    matchCountdownDeadline: null, pending: false, openerDraw: null,
   }),
 }));

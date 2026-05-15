@@ -19,12 +19,20 @@ export async function joinLobby(opts: { tableId: string; displayName?: string })
   socket.off("match:countdown");
   socket.off("match:countdownCanceled");
   socket.off("room:pending");
+  socket.off("game:openerDraw");
 
   socket.on("room:joined", (payload: any) => useGameStore.getState().setJoined(payload));
   socket.on("room:waiting", (payload: RoomWaitingPayload) =>
     useGameStore.getState().setWaiting(payload)
   );
-  socket.on("game:dealt", (payload: any) => useGameStore.getState().setDealt(payload));
+  socket.on("game:dealt", (payload: any) => {
+    useGameStore.getState().setOpenerDraw(null);
+    useGameStore.getState().setDealt(payload);
+  });
+  socket.on("game:openerDraw", (payload: any) => {
+    useGameStore.getState().setOpenerDraw(payload);
+    setTimeout(() => useGameStore.getState().setOpenerDraw(null), (payload.durationMs ?? 3500) + 500);
+  });
   socket.on("game:moveApplied", (payload: any) => {
     const store = useGameStore.getState();
     store.setPublic(payload.publicState);
@@ -89,7 +97,7 @@ export async function joinLobby(opts: { tableId: string; displayName?: string })
     console.log("[joinLobby] ack", resp);
     if (resp.ok) {
       if (resp.pending) useGameStore.getState().setPending(true);
-      router.push("/table");
+      router.push("/game-preview");
     } else {
       console.warn("[joinLobby] failed:", resp.error);
     }

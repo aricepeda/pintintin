@@ -9,7 +9,8 @@ export function GameTable({ children }: { children: React.ReactNode }) {
   // Oval shape: wider than tall (horizontal ellipse in landscape).
   const tableWidth = W * 0.88;
   const tableHeight = H * 0.72;
-  const RADIUS = Math.max(tableWidth, tableHeight);
+  // Rectangular table with rounded corners (was: oval).
+  const RADIUS = 28;
 
   return (
     <View style={styles.container}>

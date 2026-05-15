@@ -309,17 +309,17 @@ function PassAnnouncement({ seat, side }: {
   seat: Seat; side: "top" | "left" | "right" | "bottom";
 }) {
   useEffect(() => { speakPass(); }, []);
+  // Small bubble anchored close to the seat's panel.
   const positionStyle =
-    side === "top"    ? { top: 8,    left: 0, right: 0, alignItems: "center" as const } :
-    side === "bottom" ? { bottom: 90, left: 0, right: 0, alignItems: "center" as const } :
-    side === "left"   ? { left: 8,  top: "40%" as any, alignItems: "flex-start" as const } :
-                        { right: 8, top: "40%" as any, alignItems: "flex-end" as const };
+    side === "top"    ? { top: 70,    left: 0, right: 0, alignItems: "center" as const } :
+    side === "bottom" ? { bottom: 110, left: 0, right: 0, alignItems: "center" as const } :
+    side === "left"   ? { left: 50,   top: "45%" as any, alignItems: "flex-start" as const } :
+                        { right: 50,  top: "45%" as any, alignItems: "flex-end" as const };
 
   return (
     <View pointerEvents="none" style={[styles.passWrap, positionStyle]}>
-      <View style={styles.passPill}>
-        <Text style={styles.passSub}>{LABELS[seat]}</Text>
-        <Text style={styles.passMain}>PASO</Text>
+      <View style={styles.passBubble}>
+        <Text style={styles.passBubbleText}>Pass</Text>
       </View>
     </View>
   );
@@ -923,7 +923,7 @@ const revStyles = StyleSheet.create({
 });
 
 export default function Table() {
-  const { yourSeat, yourHand, publicState, announcement, roundEndData, setRoundEndData, waiting, matchCountdownDeadline, pending } = useGameStore();
+  const { yourSeat, yourHand, publicState, announcement, roundEndData, setRoundEndData, waiting, matchCountdownDeadline, pending, openerDraw } = useGameStore();
 
   // Pre-match countdown — ticks every 250ms while the deadline is in the future.
   const [countdownSec, setCountdownSec] = useState<number | null>(null);
@@ -1346,12 +1346,6 @@ export default function Table() {
               )}
             </View>
 
-            {/* Turn status inside table — only shows "no moves / auto pass" */}
-            {!dealing && !openerCallout && autoPassing && (
-              <View style={styles.autoPassBanner}>
-                <Text style={styles.autoPassText}>Sin movimientos — Paso automático…</Text>
-              </View>
-            )}
           </View>
         </View>
 
@@ -1472,6 +1466,28 @@ export default function Table() {
           <View style={styles.pendingPill}>
             <Text style={styles.pendingTitle}>ESPERANDO</Text>
             <Text style={styles.pendingSub}>La partida está en curso. Entrarás en la próxima ronda.</Text>
+          </View>
+        </View>
+      )}
+
+      {/* OPENER DRAW — random tile per seat, highest wins the first opener */}
+      {openerDraw && (
+        <View pointerEvents="none" style={openerDrawStyles.overlay}>
+          <Text style={openerDrawStyles.title}>SACA LA FICHA MÁS ALTA</Text>
+          <View style={openerDrawStyles.row}>
+            {Object.entries(openerDraw.draws).map(([seatStr, t]) => {
+              const seat = Number(seatStr) as Seat;
+              const isWinner = seat === openerDraw.winnerSeat;
+              const name = seatName(seat) ?? `J${seat + 1}`;
+              return (
+                <View key={seat} style={[openerDrawStyles.col, isWinner && openerDrawStyles.colWinner]}>
+                  <Text style={openerDrawStyles.label} numberOfLines={1}>{name}</Text>
+                  <DominoTile a={t.a as any} b={t.b as any} size={36} />
+                  <Text style={openerDrawStyles.sum}>{t.a + t.b}</Text>
+                  {isWinner && <Text style={openerDrawStyles.winnerTag}>¡ABRE!</Text>}
+                </View>
+              );
+            })}
           </View>
         </View>
       )}
@@ -1681,6 +1697,30 @@ const WOOD_DARK = "#4a2a0a";
 const FELT = "#2a6b42";
 const FELT_DARK = "#1e5234";
 
+const openerDrawStyles = StyleSheet.create({
+  overlay: {
+    position: "absolute", top: 0, left: 0, right: 0, bottom: 0,
+    alignItems: "center", justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.55)", zIndex: 5000,
+  },
+  title: {
+    color: "#f2c14e", fontWeight: "900", fontSize: 14, letterSpacing: 2, marginBottom: 16,
+    textShadowColor: "#000", textShadowOffset: { width: 1, height: 1 }, textShadowRadius: 3,
+  },
+  row: { flexDirection: "row", gap: 10, alignItems: "flex-end" },
+  col: {
+    alignItems: "center", gap: 4, padding: 8, borderRadius: 10,
+    borderWidth: 2, borderColor: "transparent",
+  },
+  colWinner: {
+    borderColor: "#f2c14e", backgroundColor: "rgba(242,193,78,0.18)",
+    shadowColor: "#f2c14e", shadowOpacity: 0.8, shadowRadius: 10, elevation: 10,
+  },
+  label: { color: "#fff", fontSize: 11, fontWeight: "700", maxWidth: 70 },
+  sum: { color: "#bfe5c8", fontSize: 12, fontWeight: "800" },
+  winnerTag: { color: "#f2c14e", fontSize: 11, fontWeight: "900", letterSpacing: 1 },
+});
+
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: "#1a0f05" },
 
@@ -1873,16 +1913,13 @@ const styles = StyleSheet.create({
   passWrap: {
     position: "absolute", zIndex: 4500,
   },
-  passPill: {
-    backgroundColor: "rgba(0,0,0,0.78)", borderRadius: 12, paddingVertical: 8, paddingHorizontal: 16,
-    borderWidth: 2, borderColor: "#e63946",
-    shadowColor: "#000", shadowOpacity: 0.6, shadowRadius: 8, elevation: 12,
-    alignItems: "center",
+  passBubble: {
+    backgroundColor: "rgba(20,20,20,0.92)", borderRadius: 14, paddingVertical: 4, paddingHorizontal: 12,
+    borderWidth: 1, borderColor: "#e63946",
+    shadowColor: "#000", shadowOpacity: 0.5, shadowRadius: 4, elevation: 8,
   },
-  passSub: { color: "#fff", fontSize: 12, fontWeight: "700", opacity: 0.85 },
-  passMain: {
-    color: "#e63946", fontSize: 28, fontWeight: "900", letterSpacing: 3,
-    textShadowColor: "#000", textShadowOffset: { width: 1, height: 1 }, textShadowRadius: 4,
+  passBubbleText: {
+    color: "#fff", fontSize: 13, fontWeight: "800", letterSpacing: 1,
   },
   announcementOverlay: {
     position: "absolute", top: 0, bottom: 0, left: 0, right: 0, backgroundColor: "rgba(0,0,0,0.55)",

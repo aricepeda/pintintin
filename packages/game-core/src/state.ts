@@ -21,6 +21,8 @@ export interface CreateMatchOptions {
   targetScore?: number;
   playerCount: 2 | 3 | 4;
   rng: Rng;
+  /** Override the opener seat. If omitted, falls back to highest-double rule. */
+  forcedStarter?: Seat;
 }
 
 function emptyCounts(): Record<Seat, number> {
@@ -35,7 +37,7 @@ export function createInitialState(opts: CreateMatchOptions): FullState {
   const targetScore = opts.targetScore ?? 100;
   const playerCount = opts.playerCount;
   const hands = dealHands(opts.rng, playerCount);
-  const starter = findStarter(hands, playerCount);
+  const starter = opts.forcedStarter !== undefined ? opts.forcedStarter : findStarter(hands, playerCount);
   return {
     board: [],
     leftEnd: null,
@@ -55,9 +57,9 @@ export function createInitialState(opts: CreateMatchOptions): FullState {
   };
 }
 
-export function startNextRound(prev: FullState, rng: Rng): FullState {
+export function startNextRound(prev: FullState, rng: Rng, forcedStarter?: Seat): FullState {
   const hands = dealHands(rng, prev.playerCount);
-  const starter = findStarter(hands, prev.playerCount);
+  const starter = forcedStarter !== undefined ? forcedStarter : findStarter(hands, prev.playerCount);
   return {
     ...prev,
     board: [],

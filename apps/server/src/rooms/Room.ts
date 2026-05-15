@@ -6,6 +6,7 @@ import {
   projectPublic,
   startNextRound,
   activeSeats,
+  handHasAnyLegalMove,
   type FullState,
   type Seat,
   type GameEvent,
@@ -33,13 +34,14 @@ function cryptoRng(): () => number {
   };
 }
 
-const COUNTDOWN_MS = 10_000;
+const COUNTDOWN_MS = 5_000;
 
 export class Room {
   public state: FullState | null = null;
   public seats: Record<Seat, SeatOccupant>;
   public phase: "waiting" | "playing" | "ended" = "waiting";
   private turnTimer: NodeJS.Timeout | null = null;
+  private autoPassTimer: NodeJS.Timeout | null = null;
   private rng = cryptoRng();
   // Mid-match arrivals wait silently here; they get seated at the next round.
   private pendingHumans: { userId: string; displayName: string }[] = [];
@@ -128,7 +130,8 @@ export class Room {
 
   private maybeStartOrResetCountdown() {
     if (this.phase !== "waiting") return;
-    if (this.connectedHumanCount() < 2) return;
+    // Allow countdown with ≥1 human (rest auto-filled with bots in startMatchIfReady).
+    if (this.connectedHumanCount() < 1) return;
     if (this.countdownTimer) clearTimeout(this.countdownTimer);
     this.countdownDeadline = Date.now() + COUNTDOWN_MS;
     this.emitter.toAll("match:countdown", { deadline: this.countdownDeadline });
@@ -171,20 +174,59 @@ export class Room {
     return true;
   }
 
+  // Tracks who opened the current and previous rounds — used to determine
+  // who opens after a tied/blocked round (same player opens again).
+  public currentOpenerSeat: Seat | null = null;
+  public lastOpenerSeat: Seat | null = null;
+
   startMatchIfReady(): boolean {
     if (this.phase !== "waiting") return false;
     const humans = this.connectedHumanCount();
-    if (humans < 2) return false;
-    const pc = Math.min(humans, this.playerCount) as 2 | 3 | 4;
+    if (humans < 1) return false;
+    // Fill empty seats with bots so a single human can play against the AI.
+    for (const seat of activeSeats(this.playerCount)) {
+      if (this.seats[seat].kind === "empty") {
+        this.seats[seat] = { kind: "bot" };
+      }
+    }
     this.phase = "playing";
-    this.state = createInitialState({
-      rng: this.rng,
-      targetScore: config.targetScore,
-      playerCount: pc,
-    });
-    this.startMatch();
     this.emitter.onMatchStarted?.(this.id);
+    // Run the opener draw, then deal hands when animation finishes.
+    this.runOpenerDraw();
     return true;
+  }
+
+  private runOpenerDraw() {
+    // Each active seat draws a random tile from a fresh full set.
+    const pool: { a: number; b: number }[] = [];
+    for (let a = 0; a <= 6; a++) for (let b = a; b <= 6; b++) pool.push({ a, b });
+    // Fisher-Yates shuffle.
+    for (let i = pool.length - 1; i > 0; i--) {
+      const j = Math.floor(this.rng() * (i + 1));
+      const tmp = pool[i]!; pool[i] = pool[j]!; pool[j] = tmp;
+    }
+    const draws: Record<number, { a: number; b: number }> = {};
+    let winnerSeat: Seat = 0 as Seat;
+    let bestSum = -1;
+    for (const seat of activeSeats(this.playerCount)) {
+      const tile = pool.pop()!;
+      draws[seat] = tile;
+      const sum = tile.a + tile.b;
+      if (sum > bestSum) { bestSum = sum; winnerSeat = seat; }
+    }
+    this.emitter.toAll("game:openerDraw", { draws, winnerSeat, durationMs: 3500 });
+    setTimeout(() => {
+      if (this.phase !== "playing") return;
+      this.currentOpenerSeat = winnerSeat;
+      this.lastOpenerSeat = winnerSeat;
+      this.state = createInitialState({
+        rng: this.rng,
+        targetScore: config.targetScore,
+        playerCount: this.playerCount,
+        forcedStarter: winnerSeat,
+      });
+      this.startMatch();
+    }, 3500);
   }
 
   private compactSeats() {
@@ -274,6 +316,33 @@ export class Room {
     });
     this.scheduleTurnTimer();
     this.driveBots();
+    this.scheduleAutoPass();
+  }
+
+  private scheduleAutoPass() {
+    if (this.autoPassTimer) {
+      clearTimeout(this.autoPassTimer);
+      this.autoPassTimer = null;
+    }
+    if (!this.state || this.state.phase !== "playing") return;
+    const seat = this.state.currentSeat;
+    const occ = this.seats[seat];
+    // Bots / disconnected humans are handled by driveBots / runSeatAuto.
+    if (occ.kind !== "human" || !occ.connected) return;
+    // Don't auto-pass during the opener (no board yet): the opener will be played.
+    if (this.state.board.length === 0) return;
+    const hand = this.state.hands[seat];
+    if (handHasAnyLegalMove(hand, this.state.leftEnd, this.state.rightEnd)) return;
+    this.autoPassTimer = setTimeout(() => {
+      this.autoPassTimer = null;
+      if (!this.state || this.state.phase !== "playing") return;
+      if (this.state.currentSeat !== seat) return;
+      try {
+        this.apply({ type: "PASS", seat });
+      } catch (err) {
+        logger.error({ err, seat }, "auto pass failed");
+      }
+    }, 1400);
   }
 
   requestNextRound() {
@@ -284,7 +353,23 @@ export class Room {
   private nextRound() {
     // Seat any pending mid-match arrivals before dealing the new round.
     this.seatPendingHumans();
-    this.state = startNextRound(this.state!, this.rng);
+    // Determine next opener:
+    // - Round had a winner (domino or blocked decided) → winner opens next.
+    // - Round was blocked AND tied (no winner) → same opener opens again.
+    const prev = this.state!;
+    const lastEvent = prev.lastEvent;
+    let nextOpener: Seat | undefined;
+    if (lastEvent && lastEvent.type === "ROUND_ENDED") {
+      if (lastEvent.winnerSeat !== null) {
+        nextOpener = lastEvent.winnerSeat;
+      } else {
+        // Blocked + tied → previous opener opens again.
+        nextOpener = this.currentOpenerSeat ?? undefined;
+      }
+    }
+    this.lastOpenerSeat = this.currentOpenerSeat;
+    if (nextOpener !== undefined) this.currentOpenerSeat = nextOpener;
+    this.state = startNextRound(prev, this.rng, nextOpener);
     for (const seat of activeSeats(this.playerCount)) {
       const occ = this.seats[seat];
       if (occ.kind === "human") {
@@ -424,6 +509,8 @@ export class Room {
   private cleanup() {
     if (this.turnTimer) clearTimeout(this.turnTimer);
     this.turnTimer = null;
+    if (this.autoPassTimer) clearTimeout(this.autoPassTimer);
+    this.autoPassTimer = null;
   }
 
   destroy() {

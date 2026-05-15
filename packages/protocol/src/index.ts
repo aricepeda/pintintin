@@ -85,6 +85,7 @@ export const ServerEventNames = [
   "room:resync",
   "room:playerDisconnected",
   "room:playerReconnected",
+  "game:openerDraw",
   "game:dealt",
   "game:moveApplied",
   "game:passed",

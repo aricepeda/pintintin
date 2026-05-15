@@ -1,5 +1,5 @@
-import React, { useCallback, useState } from 'react';
-import { View, Text, Pressable, StyleSheet, type LayoutChangeEvent } from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { View, StyleSheet, type LayoutChangeEvent } from 'react-native';
 import { useSharedValue } from 'react-native-reanimated';
 import { GameTable } from '../components/game/GameTable';
 import { PlayerSeat, type PlayerSeatProps } from '../components/game/PlayerSeat';
@@ -9,13 +9,14 @@ import { DragLayer } from '../components/game/DragLayer';
 import { DropGhost, type GhostSpec } from '../components/game/DropGhost';
 import { HamburgerMenu, type MenuOption } from '../components/ui/HamburgerMenu';
 import { MatchCountdown } from '../components/game/MatchCountdown';
+import { ShuffleAndDeal } from '../components/game/ShuffleAndDeal';
 import { useLandscapeLock } from '../hooks/useLandscapeLock';
 import { confirmLeaveRoom } from '../net/leaveRoom';
-import { playTile, passTurn } from '../net/playTile';
+import { playTile } from '../net/playTile';
 import { useGameStore } from '../store/game';
+import { speak } from '../audio';
 import {
   canPlayTile,
-  handHasAnyLegalMove,
   isDouble,
   type Seat,
   type End,
@@ -34,10 +35,18 @@ const POSITION_TO_SCREEN: Record<SeatPosition, SeatScreenPosition> = {
   east: 'right',
 };
 
-function mapSeatsToPositions(yourSeat: Seat): Record<Seat, SeatPosition> {
+function mapSeatsToPositions(yourSeat: Seat, playerCount: number): Record<Seat, SeatPosition> {
   const map = {} as Record<Seat, SeatPosition>;
-  for (let i = 0; i < 4; i++) {
-    const seat = ((yourSeat + i) % 4) as Seat;
+  if (playerCount === 2) {
+    // Heads-up: you (south) vs the other (north). No east/west.
+    map[yourSeat] = 'south';
+    const opponent = ((yourSeat + 1) % 2) as Seat;
+    map[opponent] = 'north';
+    return map;
+  }
+  // 4-player: you=south, then west/north/east clockwise around the table.
+  for (let i = 0; i < playerCount; i++) {
+    const seat = ((yourSeat + i) % playerCount) as Seat;
     map[seat] = POSITION_ORDER[i]!;
   }
   return map;
@@ -48,7 +57,7 @@ const placeholder = (name: string): PlayerSeatProps => ({
   money: 5000,
 });
 
-const HAND_TILE_SIZE = 44;
+const HAND_TILE_SIZE = 30;
 const GHOST_GAP = 6;
 
 export function GameScreen() {
@@ -60,17 +69,30 @@ export function GameScreen() {
   const waiting = useGameStore((s) => s.waiting);
   const turnDeadline = useGameStore((s) => s.turnDeadline);
   const matchCountdownDeadline = useGameStore((s) => s.matchCountdownDeadline);
+  const announcement = useGameStore((s) => s.announcement);
+
+  useEffect(() => {
+    if (announcement?.type === 'pass') {
+      speak('Pass');
+    }
+  }, [announcement]);
 
   const effectiveYourSeat: Seat = yourSeat ?? 0;
-  const seatToPos = mapSeatsToPositions(effectiveYourSeat);
+  const seatToPos = mapSeatsToPositions(effectiveYourSeat, publicState?.activeSeats?.length ?? waiting?.playerCount ?? 4);
   const activeSeat = publicState?.currentSeat ?? null;
   const playerCount =
     publicState?.activeSeats?.length ?? waiting?.playerCount ?? 4;
   const isHeadsUp = playerCount === 2;
 
   const positionToSeat = (pos: SeatPosition): Seat => {
+    if (playerCount === 2) {
+      // Heads-up: only south (you) and north (opponent).
+      if (pos === 'south') return effectiveYourSeat;
+      if (pos === 'north') return ((effectiveYourSeat + 1) % 2) as Seat;
+      return effectiveYourSeat; // east/west have no seat in heads-up
+    }
     const offset = POSITION_ORDER.indexOf(pos);
-    return ((effectiveYourSeat + offset) % 4) as Seat;
+    return ((effectiveYourSeat + offset) % playerCount) as Seat;
   };
 
   const POSITION_LABEL: Record<SeatPosition, string> = {
@@ -101,9 +123,10 @@ export function GameScreen() {
       ...placeholder(seatName(seat)),
       isCurrentUser: isYou,
       isActive,
-      turnDeadline: isActive ? turnDeadline : null,
-      handCount: publicState?.handCounts?.[seat] ?? null,
+      turnDeadline: null, // timer disabled
+      handCount: dealing ? null : publicState?.handCounts?.[seat] ?? null,
       layout: POSITION_TO_LAYOUT[pos],
+      showPass: announcement?.type === 'pass' && announcement.seat === seat,
     };
   };
 
@@ -117,8 +140,20 @@ export function GameScreen() {
   const rightEnd = publicState?.rightEnd ?? null;
   const isYourTurn = activeSeat === effectiveYourSeat;
 
-  const noLegalMoves =
-    isYourTurn && yourHand.length > 0 && !handHasAnyLegalMove(yourHand, leftEnd, rightEnd);
+  // Trigger shuffle+deal once per round, when the dealt hand arrives.
+  // (The pre-match countdown is followed almost immediately by game:dealt.)
+  const [dealing, setDealing] = useState(false);
+  const [revealedYou, setRevealedYou] = useState(0);
+  const lastRoundDealtRef = useRef<number | null>(null);
+  useEffect(() => {
+    const round = publicState?.roundNo ?? null;
+    const boardLen = publicState?.board?.length ?? 0;
+    if (round !== null && boardLen === 0 && yourHand.length > 0 && lastRoundDealtRef.current !== round) {
+      lastRoundDealtRef.current = round;
+      setRevealedYou(0);
+      setDealing(true);
+    }
+  }, [publicState?.roundNo, publicState?.board?.length, yourHand.length]);
 
   const sharedDragX = useSharedValue(0);
   const sharedDragY = useSharedValue(0);
@@ -178,11 +213,12 @@ export function GameScreen() {
       return out;
     }
     if (chainBounds) {
+      // chainBounds.top/bottom are already window-absolute (Board uses measureInWindow).
       if (canLeft) {
         out.push({
           end: 'left',
           x,
-          y: boardRect.y + chainBounds.top - GHOST_GAP - ghostH,
+          y: chainBounds.top - GHOST_GAP - ghostH,
           orientation,
           flipped: leftFlipped,
         });
@@ -191,7 +227,7 @@ export function GameScreen() {
         out.push({
           end: 'right',
           x,
-          y: boardRect.y + chainBounds.bottom + GHOST_GAP,
+          y: chainBounds.bottom + GHOST_GAP,
           orientation,
           flipped: rightFlipped,
         });
@@ -203,11 +239,6 @@ export function GameScreen() {
   const handleDrop = async (tile: Tile, end: End) => {
     const resp = await playTile(tile.id, end);
     if (!resp.ok) console.warn('[playTile] failed', resp.error);
-  };
-
-  const doPass = async () => {
-    const resp = await passTurn();
-    if (!resp.ok) console.warn('[passTurn] failed', resp.error);
   };
 
   const menuOptions: MenuOption[] = [
@@ -249,20 +280,12 @@ export function GameScreen() {
           <PlayerSeat {...seatProps(positionToSeat('south'))} />
         </View>
 
-        {noLegalMoves && (
-          <View style={styles.passLayer} pointerEvents="box-none">
-            <Pressable style={[styles.playBtn, styles.passBtn]} onPress={doPass}>
-              <Text style={styles.playBtnText}>Pasar</Text>
-            </Pressable>
-          </View>
-        )}
-
         <View style={styles.handLayer} pointerEvents="box-none">
           <DraggableHand
-            tiles={yourHand}
+            tiles={dealing ? yourHand.slice(0, revealedYou) : yourHand}
             leftEnd={leftEnd}
             rightEnd={rightEnd}
-            disabled={!isYourTurn}
+            disabled={!isYourTurn || dealing}
             zones={zones}
             tileSize={HAND_TILE_SIZE}
             onDrop={handleDrop}
@@ -288,6 +311,19 @@ export function GameScreen() {
       />
 
       <MatchCountdown deadline={matchCountdownDeadline} />
+
+      {dealing && (
+        <ShuffleAndDeal
+          countsBySide={{
+            bottom: yourHand.length,
+            top: publicState?.handCounts?.[positionToSeat('north')] ?? 0,
+          }}
+          dealOrder={['bottom', 'top']}
+          yourSide="bottom"
+          onYourTileTick={() => setRevealedYou((n) => n + 1)}
+          onDone={() => setDealing(false)}
+        />
+      )}
     </GameTable>
   );
 }
@@ -295,23 +331,12 @@ export function GameScreen() {
 const styles = StyleSheet.create({
   seatsLayer: { ...StyleSheet.absoluteFillObject },
   seat: { position: 'absolute' },
-  north:     { top: '6%',  left: 0, right: 0, alignItems: 'center' },
-  southInfo: { bottom: 8,  left: 0, right: 0, alignItems: 'center' },
-  east:      { right: '3%', top: 0, bottom: 0, justifyContent: 'center' },
-  west:      { left: '3%',  top: 0, bottom: 0, justifyContent: 'center' },
-  handLayer: { position: 'absolute', left: 0, right: 0, bottom: 64, alignItems: 'center' },
+  // Avatares con su centro sobre el borde del óvalo (mesa = 88% × 72% pantalla).
+  north:     { top: '14%',    left: 0, right: 0, alignItems: 'center',     marginTop: -40 },
+  southInfo: { bottom: '14%', left: 0, right: 0, alignItems: 'center',     marginBottom: -40 },
+  east:      { right: '6%',   top: 0, bottom: 0, justifyContent: 'center', marginRight: -40 },
+  west:      { left: '6%',    top: 0, bottom: 0, justifyContent: 'center', marginLeft: -40 },
+  // Hand sits ABOVE the south player box. Bottom 14% (oval edge) + ~80px (avatar) + gap.
+  handLayer: { position: 'absolute', left: 0, right: 0, bottom: '16%', alignItems: 'center' },
   menuLayer: { position: 'absolute', top: 16, left: 16 },
-  passLayer: {
-    position: 'absolute',
-    left: 0, right: 0, bottom: 200,
-    alignItems: 'center',
-  },
-  playBtn: {
-    backgroundColor: '#c9a961',
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: 8,
-  },
-  passBtn: { backgroundColor: '#b54b4b' },
-  playBtnText: { color: '#0a0a0a', fontWeight: '700', fontSize: 14 },
 });

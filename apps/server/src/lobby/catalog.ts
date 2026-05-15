@@ -1,12 +1,7 @@
 import type { CashTableTemplate, TournamentTemplate } from "@pintintin/protocol";
 
 export const CASH_TEMPLATES: Omit<CashTableTemplate, "players" | "status">[] = [
-  { id: "habana",   name: "Mesa Habana",   smallBlind: 1,   bigBlind: 2,   playerCount: 4 },
-  { id: "dorado",   name: "Salón Dorado",  smallBlind: 5,   bigBlind: 10,  playerCount: 4 },
-  { id: "caribe",   name: "Caribe Club",   smallBlind: 10,  bigBlind: 25,  playerCount: 4 },
-  { id: "tropical", name: "VIP Tropical",  smallBlind: 25,  bigBlind: 50,  playerCount: 4 },
-  { id: "royale",   name: "Domino Royale", smallBlind: 50,  bigBlind: 100, playerCount: 4 },
-  { id: "ron",      name: "Noche de Ron",  smallBlind: 100, bigBlind: 200, playerCount: 4 },
+  { id: "habana", name: "Mesa Habana (HU)", smallBlind: 1, bigBlind: 2, playerCount: 2 },
 ];
 
 const inMinutes = (m: number) => new Date(Date.now() + m * 60_000).toISOString();

@@ -22,6 +22,7 @@ export interface PlayerSeatProps {
   turnDeadline?: number | null;
   handCount?: number | null;
   layout?: PlayerSeatLayout;
+  showPass?: boolean;
 }
 
 export function PlayerSeat({
@@ -32,6 +33,7 @@ export function PlayerSeat({
   turnDeadline = null,
   handCount = null,
   layout = 'bottom',
+  showPass = false,
 }: PlayerSeatProps) {
   const pulse = useSharedValue(0);
 
@@ -75,9 +77,16 @@ export function PlayerSeat({
     </View>
   ) : null;
 
+  const passBanner = showPass ? (
+    <View pointerEvents="none" style={styles.passBanner}>
+      <Text style={styles.passText}>PASS</Text>
+    </View>
+  ) : null;
+
   return (
     <View style={containerStyle}>
       <View style={styles.cardWrap}>
+        {passBanner}
         {isActive && <Animated.View style={[styles.glow, glowStyle]} />}
         <View style={[styles.card, isCurrentUser && styles.cardCurrent]}>
           <Text style={styles.name} numberOfLines={1}>
@@ -124,26 +133,26 @@ const styles = StyleSheet.create({
   tiles: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 2,
+    gap: 3,
     justifyContent: 'center',
-    maxWidth: 96,
+    maxWidth: 220,
   },
   tilesVertical: {
     flexDirection: 'column',
-    maxWidth: 14,
-    maxHeight: 120,
+    maxWidth: 22,
+    maxHeight: 220,
   },
   miniTile: {
-    width: 9,
-    height: 16,
-    backgroundColor: '#7a3b3b',
-    borderRadius: 2,
-    borderWidth: 0.5,
-    borderColor: '#3a1010',
+    width: 14,
+    height: 24,
+    backgroundColor: '#faf6e8',
+    borderRadius: 3,
+    borderWidth: 1,
+    borderColor: '#3a2410',
   },
   miniTileVertical: {
-    width: 16,
-    height: 9,
+    width: 24,
+    height: 14,
   },
   glow: {
     ...StyleSheet.absoluteFillObject,
@@ -184,5 +193,32 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
     marginTop: 2,
+  },
+  passBanner: {
+    position: 'absolute',
+    bottom: '100%',
+    left: '50%',
+    marginBottom: 6,
+    transform: [{ translateX: -40 }],
+    backgroundColor: 'rgba(0,0,0,0.78)',
+    borderColor: '#e8b85c',
+    borderWidth: 2,
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 4,
+    width: 80,
+    alignItems: 'center',
+    zIndex: 50,
+    shadowColor: '#000',
+    shadowOpacity: 0.6,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 16,
+  },
+  passText: {
+    color: '#ffd966',
+    fontSize: 22,
+    fontWeight: '900',
+    letterSpacing: 2,
   },
 });
