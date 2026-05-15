@@ -639,6 +639,7 @@ function DealingOverlay({
 }) {
   const STEP_MS = 180;
   const SHUFFLE_MS = 1800;
+  const TRAVEL_MS = 320;
   const TILE_W = 32, TILE_H = 18, GAP = 3;
 
   type Piece = {
@@ -676,10 +677,10 @@ function DealingOverlay({
     const timers: ReturnType<typeof setTimeout>[] = [];
     pieces.forEach((p) => {
       if (p.side === "bottom") {
-        timers.push(setTimeout(onYourTileTick, SHUFFLE_MS + p.dealOrder * STEP_MS));
+        timers.push(setTimeout(onYourTileTick, SHUFFLE_MS + p.dealOrder * STEP_MS + TRAVEL_MS));
       }
     });
-    timers.push(setTimeout(onDone, SHUFFLE_MS + totalMs));
+    timers.push(setTimeout(onDone, SHUFFLE_MS + totalMs + TRAVEL_MS));
     return () => { clearTimeout(shuffleEnd); timers.forEach(clearTimeout); };
   }, []);
 
@@ -706,9 +707,7 @@ function DealingOverlay({
             <View style={[dealStyles.stackTile, { top: -2, left: -2 }]} />
             <View style={[dealStyles.stackTile, { top: -4, left: -4 }]} />
           </View>
-          {pieces
-            .filter((p) => p.side !== "bottom")
-            .map((p) => {
+          {pieces.map((p) => {
               const t = targetFor(p);
               return <DealingTile key={p.id} dx={t.x} dy={t.y} delay={p.dealOrder * STEP_MS} />;
             })}
@@ -1492,13 +1491,24 @@ export default function Table() {
         </View>
       )}
 
-      {/* PRE-MATCH COUNTDOWN */}
-      {countdownSec !== null && (
+      {/* PRE-MATCH COUNTDOWN — DEV: disabled for faster iteration */}
+      {false && countdownSec !== null && (
         <View pointerEvents="none" style={styles.matchCountdownWrap}>
           <Text style={styles.matchCountdownLabel}>Inicia en</Text>
           <CountdownPopNumber key={countdownSec} n={countdownSec} />
         </View>
       )}
+
+      {/* DEV: temporary reset-hand button (top-right) */}
+      <Pressable
+        onPress={async () => {
+          const s = await getSocket();
+          s.emit("game:devReset", {}, () => {});
+        }}
+        style={styles.devResetBtn}
+      >
+        <Text style={styles.devResetBtnText}>↻ Reset</Text>
+      </Pressable>
 
       {/* PASS / TRANCADO ANNOUNCEMENT */}
 {announcement?.type === "blocked" && (
@@ -1902,6 +1912,12 @@ const styles = StyleSheet.create({
     alignItems: "center", justifyContent: "center", zIndex: 4900,
     backgroundColor: "rgba(0,0,0,0.25)",
   },
+  devResetBtn: {
+    position: "absolute", top: 40, right: 12, zIndex: 9999,
+    backgroundColor: "#e63946", paddingHorizontal: 12, paddingVertical: 8,
+    borderRadius: 8, borderWidth: 1, borderColor: "#000",
+  },
+  devResetBtnText: { color: "#fff", fontWeight: "900", fontSize: 13, letterSpacing: 1 },
   matchCountdownLabel: {
     color: "#bfe5c8", fontSize: 16, fontWeight: "700", letterSpacing: 2,
     marginBottom: 8, textShadowColor: "#000", textShadowOffset: { width: 1, height: 2 }, textShadowRadius: 4,

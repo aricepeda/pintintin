@@ -6,10 +6,9 @@ const { width: W, height: H } = Dimensions.get('window');
 // Pure RN oval table — nested Views with very high borderRadius draw the rings.
 // Replaces the previous Skia version to keep SDK 51 compatible.
 export function GameTable({ children }: { children: React.ReactNode }) {
-  // Oval shape: wider than tall (horizontal ellipse in landscape).
+  // Rectangular table with rounded corners (portrait layout).
   const tableWidth = W * 0.88;
   const tableHeight = H * 0.72;
-  // Rectangular table with rounded corners (was: oval).
   const RADIUS = 28;
 
   return (

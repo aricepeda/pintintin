@@ -106,6 +106,14 @@ export function attachSocketHandlers(io: Server, registry: RoomRegistry) {
       ack?.({ ok: true });
     });
 
+    // Dev-only: force a fresh hand mid-match. Used by the temporary reset button.
+    socket.on("game:devReset", (_raw, ack?: (r: unknown) => void) => {
+      const room = registry.roomForUser(userId);
+      if (!room) return ack?.({ ok: false });
+      room.devForceReset();
+      ack?.({ ok: true });
+    });
+
     socket.on("disconnect", (reason) => {
       logger.info({ userId, reason }, "socket disconnected");
       const room = registry.roomForUser(userId);

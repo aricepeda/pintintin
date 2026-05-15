@@ -1,18 +1,17 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, StyleSheet, type LayoutChangeEvent } from 'react-native';
+import React, { useCallback, useEffect, useState } from 'react';
+import { View, Text, Pressable, StyleSheet, type LayoutChangeEvent } from 'react-native';
 import { useSharedValue } from 'react-native-reanimated';
 import { GameTable } from '../components/game/GameTable';
 import { PlayerSeat, type PlayerSeatProps } from '../components/game/PlayerSeat';
-import { Board, type SeatScreenPosition } from '../components/game/Board';
+import { Board, type SeatScreenPosition, type ChainEndInfo } from '../components/game/Board';
 import { DraggableHand } from '../components/game/DraggableHand';
 import { DragLayer } from '../components/game/DragLayer';
 import { DropGhost, type GhostSpec } from '../components/game/DropGhost';
 import { HamburgerMenu, type MenuOption } from '../components/ui/HamburgerMenu';
-import { MatchCountdown } from '../components/game/MatchCountdown';
-import { ShuffleAndDeal } from '../components/game/ShuffleAndDeal';
-import { useLandscapeLock } from '../hooks/useLandscapeLock';
+import { usePortraitLock } from '../hooks/usePortraitLock';
 import { confirmLeaveRoom } from '../net/leaveRoom';
 import { playTile } from '../net/playTile';
+import { devReset } from '../net/devReset';
 import { useGameStore } from '../store/game';
 import { speak } from '../audio';
 import {
@@ -61,14 +60,12 @@ const HAND_TILE_SIZE = 30;
 const GHOST_GAP = 6;
 
 export function GameScreen() {
-  useLandscapeLock();
+  usePortraitLock();
 
   const yourSeat = useGameStore((s) => s.yourSeat);
   const yourHand = useGameStore((s) => s.yourHand);
   const publicState = useGameStore((s) => s.publicState);
   const waiting = useGameStore((s) => s.waiting);
-  const turnDeadline = useGameStore((s) => s.turnDeadline);
-  const matchCountdownDeadline = useGameStore((s) => s.matchCountdownDeadline);
   const announcement = useGameStore((s) => s.announcement);
 
   useEffect(() => {
@@ -111,8 +108,8 @@ export function GameScreen() {
   const POSITION_TO_LAYOUT = {
     south: 'bottom',
     north: 'bottom',
-    east: 'left',
-    west: 'right',
+    east: 'right',
+    west: 'left',
   } as const;
 
   const seatProps = (seat: Seat): PlayerSeatProps => {
@@ -124,7 +121,7 @@ export function GameScreen() {
       isCurrentUser: isYou,
       isActive,
       turnDeadline: null, // timer disabled
-      handCount: dealing ? null : publicState?.handCounts?.[seat] ?? null,
+      handCount: publicState?.handCounts?.[seat] ?? null,
       layout: POSITION_TO_LAYOUT[pos],
       showPass: announcement?.type === 'pass' && announcement.seat === seat,
     };
@@ -140,20 +137,6 @@ export function GameScreen() {
   const rightEnd = publicState?.rightEnd ?? null;
   const isYourTurn = activeSeat === effectiveYourSeat;
 
-  // Trigger shuffle+deal once per round, when the dealt hand arrives.
-  // (The pre-match countdown is followed almost immediately by game:dealt.)
-  const [dealing, setDealing] = useState(false);
-  const [revealedYou, setRevealedYou] = useState(0);
-  const lastRoundDealtRef = useRef<number | null>(null);
-  useEffect(() => {
-    const round = publicState?.roundNo ?? null;
-    const boardLen = publicState?.board?.length ?? 0;
-    if (round !== null && boardLen === 0 && yourHand.length > 0 && lastRoundDealtRef.current !== round) {
-      lastRoundDealtRef.current = round;
-      setRevealedYou(0);
-      setDealing(true);
-    }
-  }, [publicState?.roundNo, publicState?.board?.length, yourHand.length]);
 
   const sharedDragX = useSharedValue(0);
   const sharedDragY = useSharedValue(0);
@@ -166,45 +149,64 @@ export function GameScreen() {
     setBoardRect({ x, y, w: width, h: height });
   };
 
-  // Chain bounds (top/bottom y, relative to the Board container).
-  const [chainBounds, setChainBounds] = useState<{ top: number; bottom: number } | null>(null);
+  // Chain ends — cursor position + direction for each end (window-absolute).
+  const [chainEnds, setChainEnds] = useState<{ left: ChainEndInfo | null; right: ChainEndInfo | null }>({ left: null, right: null });
   const [boardTileSize, setBoardTileSize] = useState(28);
-  const handleChainBounds = useCallback(
-    (top: number, bottom: number) => setChainBounds({ top, bottom }),
+  const handleChainEnds = useCallback(
+    (left: ChainEndInfo | null, right: ChainEndInfo | null) => setChainEnds({ left, right }),
     [],
   );
   const handleTileSize = useCallback((s: number) => setBoardTileSize(s), []);
 
-  const zones: DropZone[] = boardRect.w
-    ? [
-        { x: boardRect.x, y: boardRect.y, w: boardRect.w, h: boardRect.h / 2, end: 'left' },
-        { x: boardRect.x, y: boardRect.y + boardRect.h / 2, w: boardRect.w, h: boardRect.h / 2, end: 'right' },
-      ]
-    : [];
+  // Build a ghost adjacent to a chain end, respecting the chain's direction
+  // at that end (so after a corner the ghost extends sideways, not down).
+  const ghostFor = (
+    end: End,
+    info: ChainEndInfo,
+    tile: Tile,
+    matchPip: number | null,
+  ): GhostSpec => {
+    const dbl = isDouble(tile);
+    const dir = info.direction;
+    const chainIsVertical = dir === 'up' || dir === 'down';
+    const orientation: 'horizontal' | 'vertical' = dbl
+      ? (chainIsVertical ? 'horizontal' : 'vertical')
+      : (chainIsVertical ? 'vertical' : 'horizontal');
+    const w = orientation === 'horizontal' ? boardTileSize * 2 + 3 : boardTileSize;
+    const h = orientation === 'horizontal' ? boardTileSize : boardTileSize * 2 + 3;
+    let x = 0, y = 0;
+    if (dir === 'down')  { x = info.cursorX - w / 2; y = info.cursorY + GHOST_GAP; }
+    else if (dir === 'up')    { x = info.cursorX - w / 2; y = info.cursorY - GHOST_GAP - h; }
+    else if (dir === 'right') { x = info.cursorX + GHOST_GAP; y = info.cursorY - h / 2; }
+    else                      { x = info.cursorX - GHOST_GAP - w; y = info.cursorY - h / 2; }
+    // Flip so the matching pip touches the chain (i.e. the side facing `dir`-opposite).
+    // For dir 'down'/'right' the matching pip is on the "first" side of the tile;
+    // for 'up'/'left' it's on the "second" side.
+    let flipped = false;
+    if (!dbl && matchPip !== null) {
+      const matchOnFirst = dir === 'down' || dir === 'right';
+      if (matchOnFirst) flipped = tile.b === matchPip && tile.a !== matchPip;
+      else              flipped = tile.a === matchPip && tile.b !== matchPip;
+    }
+    return { end, x, y, orientation, flipped };
+  };
 
   // Compute ghost positions adjacent to the chain endpoints.
   const ghosts: GhostSpec[] = (() => {
     if (!draggedTile || !boardRect.w) return [];
-    const dbl = isDouble(draggedTile);
-    const orientation: 'horizontal' | 'vertical' = dbl ? 'horizontal' : 'vertical';
-    const ghostH = dbl ? boardTileSize : boardTileSize * 2;
-    const ghostW = dbl ? boardTileSize * 2 : boardTileSize;
-    const xCenter = boardRect.x + boardRect.w / 2;
-    const x = xCenter - ghostW / 2;
     const out: GhostSpec[] = [];
     const canLeft = canPlayTile(draggedTile, leftEnd, rightEnd, 'left');
     const canRight = canPlayTile(draggedTile, leftEnd, rightEnd, 'right');
-    // Ghost facing: matching pip must touch the chain.
-    // Left end (tile sits above chain): bottom pip = leftEnd → flip if tile.a matches.
-    // Right end (tile sits below chain): top pip = rightEnd → flip if tile.b matches.
-    const leftFlipped = !dbl && leftEnd !== null && draggedTile.a === leftEnd;
-    const rightFlipped = !dbl && rightEnd !== null && draggedTile.b === rightEnd;
     // When board is empty, both ends are valid; show a single ghost at center.
     if (board.length === 0) {
       if (canLeft || canRight) {
+        const dbl = isDouble(draggedTile);
+        const orientation: 'horizontal' | 'vertical' = dbl ? 'horizontal' : 'vertical';
+        const ghostW = orientation === 'horizontal' ? boardTileSize * 2 + 3 : boardTileSize;
+        const ghostH = orientation === 'horizontal' ? boardTileSize : boardTileSize * 2 + 3;
         out.push({
           end: 'right',
-          x,
+          x: boardRect.x + boardRect.w / 2 - ghostW / 2,
           y: boardRect.y + boardRect.h / 2 - ghostH / 2,
           orientation,
           flipped: false,
@@ -212,29 +214,27 @@ export function GameScreen() {
       }
       return out;
     }
-    if (chainBounds) {
-      // chainBounds.top/bottom are already window-absolute (Board uses measureInWindow).
-      if (canLeft) {
-        out.push({
-          end: 'left',
-          x,
-          y: chainBounds.top - GHOST_GAP - ghostH,
-          orientation,
-          flipped: leftFlipped,
-        });
-      }
-      if (canRight) {
-        out.push({
-          end: 'right',
-          x,
-          y: chainBounds.bottom + GHOST_GAP,
-          orientation,
-          flipped: rightFlipped,
-        });
-      }
-    }
+    if (canLeft && chainEnds.left)  out.push(ghostFor('left',  chainEnds.left,  draggedTile, leftEnd));
+    if (canRight && chainEnds.right) out.push(ghostFor('right', chainEnds.right, draggedTile, rightEnd));
     return out;
   })();
+
+  // Drop zones = ghost rects (+ small padding). Drop only succeeds when the
+  // finger lifts ON TOP of a ghost; anywhere else returns the tile to the hand.
+  const HIT_PADDING = 12;
+  const zones: DropZone[] = ghosts.map((g) => {
+    const w = (g.orientation === 'horizontal' ? boardTileSize * 2 + 3 : boardTileSize) + HIT_PADDING * 2;
+    const h = (g.orientation === 'horizontal' ? boardTileSize : boardTileSize * 2 + 3) + HIT_PADDING * 2;
+    return { x: g.x - HIT_PADDING, y: g.y - HIT_PADDING, w, h, end: g.end };
+  });
+
+  // Auto-snap area: when only ONE ghost is showing (single legal end, or
+  // opener), a drop anywhere inside the playable board area snaps to that end.
+  // Excludes the bottom 25% (where the hand sits), so dropping on the hand
+  // still returns the tile.
+  const autoSnapArea = boardRect.w
+    ? { x: boardRect.x, y: boardRect.y, w: boardRect.w, h: boardRect.h * 0.75 }
+    : null;
 
   const handleDrop = async (tile: Tile, end: End) => {
     const resp = await playTile(tile.id, end);
@@ -254,7 +254,7 @@ export function GameScreen() {
         <Board
           tiles={board}
           getSeatPosition={getSeatPosition}
-          onChainBoundsChange={handleChainBounds}
+          onChainEndsChange={handleChainEnds}
           onTileSizeChange={handleTileSize}
         />
       </View>
@@ -282,11 +282,12 @@ export function GameScreen() {
 
         <View style={styles.handLayer} pointerEvents="box-none">
           <DraggableHand
-            tiles={dealing ? yourHand.slice(0, revealedYou) : yourHand}
+            tiles={yourHand}
             leftEnd={leftEnd}
             rightEnd={rightEnd}
-            disabled={!isYourTurn || dealing}
+            disabled={!isYourTurn}
             zones={zones}
+            autoSnapArea={autoSnapArea}
             tileSize={HAND_TILE_SIZE}
             onDrop={handleDrop}
             sharedDragX={sharedDragX}
@@ -300,6 +301,15 @@ export function GameScreen() {
         <View style={styles.menuLayer} pointerEvents="box-none">
           <HamburgerMenu options={menuOptions} />
         </View>
+
+        <View style={styles.devResetLayer} pointerEvents="box-none">
+          <Pressable
+            onPress={() => { devReset(); }}
+            style={({ pressed }) => [styles.devResetBtn, pressed && styles.devResetBtnPressed]}
+          >
+            <Text style={styles.devResetText}>Nueva mano</Text>
+          </Pressable>
+        </View>
       </View>
 
       <DragLayer
@@ -309,21 +319,6 @@ export function GameScreen() {
         sharedDragY={sharedDragY}
         sharedDragVisible={sharedDragVisible}
       />
-
-      <MatchCountdown deadline={matchCountdownDeadline} />
-
-      {dealing && (
-        <ShuffleAndDeal
-          countsBySide={{
-            bottom: yourHand.length,
-            top: publicState?.handCounts?.[positionToSeat('north')] ?? 0,
-          }}
-          dealOrder={['bottom', 'top']}
-          yourSide="bottom"
-          onYourTileTick={() => setRevealedYou((n) => n + 1)}
-          onDone={() => setDealing(false)}
-        />
-      )}
     </GameTable>
   );
 }
@@ -339,4 +334,15 @@ const styles = StyleSheet.create({
   // Hand sits ABOVE the south player box. Bottom 14% (oval edge) + ~80px (avatar) + gap.
   handLayer: { position: 'absolute', left: 0, right: 0, bottom: '16%', alignItems: 'center' },
   menuLayer: { position: 'absolute', top: 16, left: 16 },
+  devResetLayer: { position: 'absolute', top: 16, left: 0, right: 0, alignItems: 'center' },
+  devResetBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    backgroundColor: '#7a2d2d',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#c9a961',
+  },
+  devResetBtnPressed: { opacity: 0.6 },
+  devResetText: { color: '#ffd966', fontSize: 13, fontWeight: '800', letterSpacing: 0.5 },
 });

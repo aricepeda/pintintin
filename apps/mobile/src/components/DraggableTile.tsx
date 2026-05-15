@@ -27,6 +27,9 @@ interface Props {
   selected?: boolean;
   legalEnds: { left: boolean; right: boolean };
   zones: DropZone[];
+  // When set, any drop inside this rect auto-snaps to the only legal end
+  // (used when there's a single ghost — e.g. only one end is playable, or opener).
+  autoSnapArea?: { x: number; y: number; w: number; h: number } | null;
   onDrop: (end: "left" | "right") => void;
   onTap?: () => void;
   onDragStart?: (tile: Tile) => void;
@@ -37,7 +40,7 @@ interface Props {
 }
 
 export function DraggableTile({
-  tile, size = 48, disabled, dim, selected, legalEnds, zones,
+  tile, size = 48, disabled, dim, selected, legalEnds, zones, autoSnapArea,
   onDrop, onTap, onDragStart, onDragEnd,
   sharedDragX, sharedDragY, sharedDragVisible,
 }: Props) {
@@ -52,8 +55,20 @@ export function DraggableTile({
           if (z.end === "right" && legalEnds.right) { onDrop("right"); return; }
         }
       }
+      // Auto-snap: if there's exactly one ghost, drops anywhere in the board
+      // area map to that end. Lets the user "drop on the board" instead of
+      // having to aim at the ghost when there's only one option.
+      if (zones.length === 1 && autoSnapArea) {
+        const a = autoSnapArea;
+        if (absX >= a.x && absX <= a.x + a.w && absY >= a.y && absY <= a.y + a.h) {
+          const z = zones[0]!;
+          if ((z.end === "left" && legalEnds.left) || (z.end === "right" && legalEnds.right)) {
+            onDrop(z.end);
+          }
+        }
+      }
     },
-    [zones, legalEnds, onDrop],
+    [zones, legalEnds, onDrop, autoSnapArea],
   );
 
   const pan = Gesture.Pan()

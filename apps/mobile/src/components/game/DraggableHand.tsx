@@ -10,6 +10,7 @@ export interface DraggableHandProps {
   rightEnd: Pip | null;
   disabled?: boolean;
   zones: DropZone[];
+  autoSnapArea?: { x: number; y: number; w: number; h: number } | null;
   tileSize: number;
   onDrop: (tile: Tile, end: End) => void;
   sharedDragX: SharedValue<number>;
@@ -20,7 +21,7 @@ export interface DraggableHandProps {
 }
 
 export function DraggableHand({
-  tiles, leftEnd, rightEnd, disabled = false, zones, tileSize,
+  tiles, leftEnd, rightEnd, disabled = false, zones, autoSnapArea, tileSize,
   onDrop, sharedDragX, sharedDragY, sharedDragVisible,
   onDragStart, onDragEnd,
 }: DraggableHandProps) {
@@ -36,9 +37,10 @@ export function DraggableHand({
               tile={t}
               size={tileSize}
               disabled={disabled || !playable}
-              dim={!disabled && !playable}
+              dim={disabled || !playable}
               legalEnds={{ left: canLeft, right: canRight }}
               zones={zones}
+              autoSnapArea={autoSnapArea}
               onDrop={(end) => onDrop(t, end)}
               onDragStart={onDragStart}
               onDragEnd={onDragEnd}

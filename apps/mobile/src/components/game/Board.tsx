@@ -6,11 +6,21 @@ import { isDouble, type BoardTile, type Seat } from '@pintintin/game-core';
 
 export type SeatScreenPosition = 'top' | 'bottom' | 'left' | 'right';
 
+export interface ChainEndInfo {
+  // Window-absolute coords for the anchor where the NEXT tile at this end
+  // would be placed. Centered on the chain axis (e.g. for dir='down' this is
+  // the bottom-center of the last tile).
+  cursorX: number;
+  cursorY: number;
+  // Direction the chain is heading at this end (where the next tile extends).
+  direction: 'up' | 'down' | 'left' | 'right';
+}
+
 interface BoardProps {
   tiles: readonly BoardTile[];
   tileSize?: number;
   getSeatPosition?: (seat: Seat) => SeatScreenPosition;
-  onChainBoundsChange?: (top: number, bottom: number) => void;
+  onChainEndsChange?: (left: ChainEndInfo | null, right: ChainEndInfo | null) => void;
   onTileSizeChange?: (size: number) => void;
 }
 
@@ -48,6 +58,12 @@ interface OvalBounds { cx: number; cy: number; a: number; b: number; }
 // Lay out a half-chain starting from a given anchor point and direction.
 // `initialMatch` is the pip value the FIRST tile of the segment must match
 // (i.e. the opener's pip on the side this segment extends from).
+interface LayoutHalfResult {
+  placements: Placement[];
+  endCursor: { x: number; y: number };
+  endDir: Dir;
+}
+
 function layoutHalf(
   segment: BoardTile[],
   anchor: { x: number; y: number },
@@ -55,7 +71,7 @@ function layoutHalf(
   initialMatch: number,
   size: number,
   oval: OvalBounds,
-): Placement[] {
+): LayoutHalfResult {
   const out: Placement[] = [];
   let dir = initialDir;
   let cursor = { ...anchor };
@@ -67,10 +83,21 @@ function layoutHalf(
       ? { down: 'left', left: 'up', up: 'right', right: 'down' }
       : { up: 'right', right: 'down', down: 'left', left: 'up' };
 
+  // Opposite direction (used when the default corner doesn't fit and we
+  // need to try turning the other way).
+  const opposite: Record<Dir, Dir> = { up: 'down', down: 'up', left: 'right', right: 'left' };
+
   // Build a placement. For aligned (non-corner) tiles: centered on cursor in
   // the placement direction. For corner tiles: perpendicular orientation,
-  // OFFSET so the matching pip aligns with the cursor.
-  const buildPlacement = (bt: BoardTile, d: Dir, corner: boolean): Placement | null => {
+  // OFFSET so the matching pip aligns with the cursor. cornerNewDirOverride
+  // lets the caller force a corner direction (used to retry with the
+  // opposite turn when the default doesn't fit).
+  const buildPlacement = (
+    bt: BoardTile,
+    d: Dir,
+    corner: boolean,
+    cornerNewDirOverride?: Dir,
+  ): Placement | null => {
     const dbl = isDouble(bt.tile);
     const alignedNow: Orientation = (d === 'up' || d === 'down') ? 'vertical' : 'horizontal';
     const perp: Orientation = alignedNow === 'vertical' ? 'horizontal' : 'vertical';
@@ -86,7 +113,7 @@ function layoutHalf(
       // For a horizontal tile (w = 2*size + 3): left pip center at x + size/2,
       // right pip center at x + 1.5*size + 3.
       // For a vertical tile: top pip center at y + size/2, bottom pip center at y + 1.5*size + 3.
-      const newDir = turnMap[d];
+      const newDir = cornerNewDirOverride ?? turnMap[d];
       const halfSize = size / 2;
       const farPip = 1.5 * size + 3; // distance from tile origin to far pip center
       if (d === 'down') {
@@ -134,7 +161,7 @@ function layoutHalf(
       const a = bt.tile.a, b = bt.tile.b;
       let matchOnFirst: boolean;
       if (corner) {
-        const newDir = turnMap[d];
+        const newDir = cornerNewDirOverride ?? turnMap[d];
         // Horizontal corner: first=left, second=right.
         // Vertical corner: first=top, second=bottom.
         if (orientation === 'horizontal') {
@@ -154,35 +181,55 @@ function layoutHalf(
     return { bt, x, y, w, h, orientation, flipped };
   };
 
-  // After an elbow we want at least one extra aligned tile in the new
-  // direction so the wrapped column has visible spacing from the central one.
-  const MIN_AFTER_CORNER = 1;
-  let tilesInCurrentDir = 0;
+  // Deterministic serpentine rule:
+  //   - up to MAX_VERTICAL aligned tiles in the vertical direction,
+  //   - then a forced corner (bottom segment → LEFT, top segment → RIGHT),
+  //   - exactly MAX_HORIZONTAL aligned tile in that horizontal direction,
+  //   - then a forced corner back to the original vertical direction (new column),
+  //   - repeat.
+  const MAX_VERTICAL = 8;
+  const MAX_HORIZONTAL = 1;
+  const verticalDir: Dir = initialDir;                          // 'down' for bottom, 'up' for top
+  const horizontalDir: Dir = initialDir === 'down' ? 'left' : 'right';
+  const isVertical = (d: Dir) => d === 'up' || d === 'down';
+  const cornerNewDirFor = (d: Dir): Dir => (isVertical(d) ? horizontalDir : verticalDir);
+  let alignedInDir = 0;
 
   for (const bt of segment) {
-    let p = buildPlacement(bt, dir, false);
+    const maxInDir = isVertical(dir) ? MAX_VERTICAL : MAX_HORIZONTAL;
+    const forceCorner = alignedInDir >= maxInDir;
+    let p: Placement | null = null;
     let isCorner = false;
-    // If we just turned and still owe MIN tiles in this direction, prefer
-    // placing aligned even if a corner would also work — keeps spacing nice.
-    if (!p) {
-      // Tried aligned, didn't fit. Only allow corner if we've placed enough
-      // tiles in this direction already (otherwise the wrap stacks too tight).
-      if (tilesInCurrentDir >= MIN_AFTER_CORNER) {
-        p = buildPlacement(bt, dir, true);
-        isCorner = !!p;
+    let cornerDir: Dir | undefined;
+
+    if (forceCorner) {
+      const newDir = cornerNewDirFor(dir);
+      p = buildPlacement(bt, dir, true, newDir);
+      if (p) { isCorner = true; cornerDir = newDir; }
+      else {
+        // Forced corner didn't fit → fall back to aligned in same dir
+        // (degenerate: chain extends past the ideal wrap).
+        p = buildPlacement(bt, dir, false);
+      }
+    } else {
+      p = buildPlacement(bt, dir, false);
+      if (!p) {
+        // Aligned didn't fit early → try the same forced corner anyway.
+        const newDir = cornerNewDirFor(dir);
+        p = buildPlacement(bt, dir, true, newDir);
+        if (p) { isCorner = true; cornerDir = newDir; }
       }
     }
     if (!p) {
-      // Last resort: try turning the direction altogether.
-      const newDir = turnMap[dir];
-      p = buildPlacement(bt, newDir, false);
-      if (p) dir = newDir;
-      else break;
+      // Last resort: try opposite-direction corner.
+      const altNewDir = opposite[cornerNewDirFor(dir)];
+      p = buildPlacement(bt, dir, true, altNewDir);
+      if (p) { isCorner = true; cornerDir = altNewDir; }
     }
+    if (!p) break;
     out.push(p);
 
-    // After a corner, change direction for subsequent tiles.
-    const nextDir = isCorner ? turnMap[dir] : dir;
+    const nextDir = isCorner ? cornerDir! : dir;
 
     // Update cursor to the FAR edge of the placed tile in the next direction.
     switch (nextDir) {
@@ -216,18 +263,24 @@ function layoutHalf(
       nextMatch = matchedFirst ? second : first;
     }
 
-    if (isCorner) tilesInCurrentDir = 0;
-    else tilesInCurrentDir += 1;
+    if (isCorner) alignedInDir = 0;
+    else alignedInDir += 1;
 
     dir = nextDir;
   }
-  return out;
+  return { placements: out, endCursor: cursor, endDir: dir };
 }
 
-function layoutChain(ordered: BoardTile[], size: number, width: number, height: number): Placement[] {
-  if (!width || !height || ordered.length === 0) return [];
+interface LayoutChainResult {
+  placements: Placement[];
+  leftEnd: ChainEndInfo | null;   // top side (the 'up' direction half)
+  rightEnd: ChainEndInfo | null;  // bottom side (the 'down' direction half)
+}
+
+function layoutChain(ordered: BoardTile[], size: number, width: number, height: number): LayoutChainResult {
+  if (!width || !height || ordered.length === 0) return { placements: [], leftEnd: null, rightEnd: null };
   const openerIdx = ordered.findIndex((bt) => bt.end === 'start');
-  if (openerIdx < 0) return [];
+  if (openerIdx < 0) return { placements: [], leftEnd: null, rightEnd: null };
   const opener = ordered[openerIdx]!;
   const dbl = isDouble(opener.tile);
   const openerOrientation: Orientation = dbl ? 'horizontal' : 'vertical';
@@ -242,12 +295,14 @@ function layoutChain(ordered: BoardTile[], size: number, width: number, height: 
     orientation: openerOrientation,
     flipped: opener.flipped,
   };
-  // Oval bounds matching the felt (GameTable: 88% × 72% of screen, centered).
-  // Shrink by MARGIN so tiles never touch the inner ring.
+  // Layout bounds. Wider than the visual felt because in portrait the felt is
+  // narrow and the chain runs out of horizontal room after one corner. Tiles
+  // are still constrained vertically to leave room for the seat avatars
+  // at top (~14%) and bottom (~14%).
   const oval: OvalBounds = {
     cx, cy,
-    a: (width * 0.88) / 2 - MARGIN,
-    b: (height * 0.72) / 2 - MARGIN,
+    a: (width * 0.96) / 2 - MARGIN,
+    b: (height * 0.70) / 2 - MARGIN,
   };
 
   // The opener's exposed pip on each side. For a vertical opener, top=a, bottom=b
@@ -256,21 +311,21 @@ function layoutChain(ordered: BoardTile[], size: number, width: number, height: 
   const openerBottom = opener.tile.b;
 
   const bottomSeg = ordered.slice(openerIdx + 1);
-  const bottomPlacements = layoutHalf(
+  const bottomResult = layoutHalf(
     bottomSeg,
     { x: cx, y: openerPlacement.y + openerPlacement.h },
     'down', openerBottom, size, oval,
   );
 
   const topSeg = ordered.slice(0, openerIdx).reverse();
-  const topPlacements = layoutHalf(
+  const topResult = layoutHalf(
     topSeg,
     { x: cx, y: openerPlacement.y },
     'up', openerTop, size, oval,
   );
 
   // Assemble in render order (top newest → ... → opener → ... → bottom newest).
-  const all: Placement[] = [...topPlacements.reverse(), openerPlacement, ...bottomPlacements];
+  const all: Placement[] = [...topResult.placements.reverse(), openerPlacement, ...bottomResult.placements];
 
   // Centering pass — shift everything so the chain's bounding box centers
   // around (cx, cy). Keeps the board visually balanced as one side grows.
@@ -280,7 +335,18 @@ function layoutChain(ordered: BoardTile[], size: number, width: number, height: 
   const maxY = Math.max(...all.map((p) => p.y + p.h));
   const dx = cx - (minX + maxX) / 2;
   const dy = cy - (minY + maxY) / 2;
-  return all.map((p) => ({ ...p, x: p.x + dx, y: p.y + dy }));
+  const placements = all.map((p) => ({ ...p, x: p.x + dx, y: p.y + dy }));
+  const leftEnd: ChainEndInfo = {
+    cursorX: topResult.endCursor.x + dx,
+    cursorY: topResult.endCursor.y + dy,
+    direction: topResult.endDir,
+  };
+  const rightEnd: ChainEndInfo = {
+    cursorX: bottomResult.endCursor.x + dx,
+    cursorY: bottomResult.endCursor.y + dy,
+    direction: bottomResult.endDir,
+  };
+  return { placements, leftEnd, rightEnd };
 }
 
 function computeTileSize(count: number, height: number): number {
@@ -302,12 +368,13 @@ function orderForRender(board: readonly BoardTile[]): BoardTile[] {
 }
 
 export function Board({
-  tiles, onChainBoundsChange, onTileSizeChange, getSeatPosition,
+  tiles, onChainEndsChange, onTileSizeChange, getSeatPosition,
 }: BoardProps) {
   const ordered = orderForRender(tiles);
   const [container, setContainer] = useState({ w: 0, h: 0 });
   const tileSize = computeTileSize(ordered.length, container.h);
-  const placements = layoutChain(ordered, tileSize, container.w, container.h);
+  const layoutResult = layoutChain(ordered, tileSize, container.w, container.h);
+  const placements = layoutResult.placements;
 
   // Track which tile.ids we've already rendered so we know which ones are NEW
   // and need an entrance animation (vs existing tiles that just slide smoothly).
@@ -335,16 +402,15 @@ export function Board({
   useEffect(() => { onTileSizeChange?.(tileSize); }, [tileSize]);
 
   const containerRef = useRef<View>(null);
-  const reportChainBounds = () => {
-    if (placements.length === 0) return;
-    const minY = Math.min(...placements.map((p) => p.y));
-    const maxY = Math.max(...placements.map((p) => p.y + p.h));
-    containerRef.current?.measureInWindow((_x, y) => {
-      onChainBoundsChange?.(y + minY, y + maxY);
+  const reportChainEnds = () => {
+    containerRef.current?.measureInWindow((winX, winY) => {
+      const toWindow = (p: ChainEndInfo | null): ChainEndInfo | null =>
+        p ? { cursorX: winX + p.cursorX, cursorY: winY + p.cursorY, direction: p.direction } : null;
+      onChainEndsChange?.(toWindow(layoutResult.leftEnd), toWindow(layoutResult.rightEnd));
     });
   };
   useEffect(() => {
-    const t = setTimeout(reportChainBounds, 16);
+    const t = setTimeout(reportChainEnds, 16);
     return () => clearTimeout(t);
   }, [placements.length, container.w, container.h, tileSize]);
 

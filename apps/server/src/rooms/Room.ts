@@ -350,6 +350,28 @@ export class Room {
     this.nextRound();
   }
 
+  // Dev-only: force a fresh hand mid-match without restarting the server.
+  devForceReset() {
+    if (!this.state) return;
+    if (this.turnTimer) { clearTimeout(this.turnTimer); this.turnTimer = null; }
+    if (this.autoPassTimer) { clearTimeout(this.autoPassTimer); this.autoPassTimer = null; }
+    this.seatPendingHumans();
+    this.state = startNextRound(this.state, this.rng);
+    this.currentOpenerSeat = this.state.currentSeat;
+    for (const seat of activeSeats(this.playerCount)) {
+      const occ = this.seats[seat];
+      if (occ.kind === "human") {
+        this.emitter.toUser(occ.userId, "game:dealt", projectFor(this.state, seat));
+      }
+    }
+    this.emitter.toAll("game:turnTimer", {
+      seat: this.state.currentSeat,
+      deadline: Date.now() + config.turnTimerMs,
+    });
+    this.scheduleTurnTimer();
+    this.driveOpener();
+  }
+
   private nextRound() {
     // Seat any pending mid-match arrivals before dealing the new round.
     this.seatPendingHumans();
